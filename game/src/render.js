@@ -1,14 +1,25 @@
-// The painter: a neon arena on one canvas — a drifting starfield over deep
-// nebulae, glowing vector ships, additive sparks and a HUD that always tells
-// the player the score, the wave and the lives left. Everything is drawn
-// from code; there are no image or font files to load.
+// The painter: a neon arena on one canvas.
+//
+// A drifting starfield over deep nebulae, glowing vector ships, additive
+// sparks and a HUD that always tells the player the score, the wave and the
+// lives left. Everything is drawn from code; there are no image or font
+// files to load.
+//
+// v2 adds the look of the new systems: warp-in warning rings, the dasher's
+// telegraphed lunge line, hit flashes on struck ships, a muzzle flash at
+// the player's nose, a red vignette when the player is hurt and a pulsing
+// last-life warning, a slow blue tint while Chrono runs, and the boss
+// itself — a big many-pointed Tyrant with a health bar across the top of
+// the screen and a flashing warning before each of its attacks.
 
 import { COMBO_WINDOW, COLORS, ENEMIES, MAX_MULTIPLIER, WIN_WAVE } from './config.js';
 import { createRandom } from './random.js';
 
 const TAU = Math.PI * 2;
 
-function shipPath(ctx, x, y, angle, radius, flare) {
+// The player's dart: a pointed nose, swept wings and a notch at the tail.
+// `flame` stretches an engine tongue out of the back when thrusting.
+function dartPath(ctx, x, y, angle, radius, flame) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
@@ -18,21 +29,35 @@ function shipPath(ctx, x, y, angle, radius, flare) {
   ctx.lineTo(-radius * 0.35, 0);
   ctx.lineTo(-radius * 0.8, -radius * 0.75);
   ctx.closePath();
-  if (flare) {
+  if (flame) {
     ctx.moveTo(-radius * 0.8, radius * 0.4);
-    ctx.lineTo(-radius * (1.5 + flare * 0.7), 0);
+    ctx.lineTo(-radius * (1.5 + flame * 0.7), 0);
     ctx.lineTo(-radius * 0.8, -radius * 0.4);
     ctx.closePath();
   }
   ctx.restore();
 }
 
-function polygon(ctx, x, y, angle, radius, sides) {
+function polyPath(ctx, x, y, angle, radius, sides) {
   ctx.beginPath();
   for (let i = 0; i < sides; i += 1) {
     const a = angle + (i / sides) * TAU;
     const px = x + Math.cos(a) * radius;
     const py = y + Math.sin(a) * radius;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+// A many-pointed star: alternating long and short spikes, for the Tyrant.
+function starPath(ctx, x, y, angle, radius, points) {
+  ctx.beginPath();
+  for (let i = 0; i < points * 2; i += 1) {
+    const a = angle + (i / (points * 2)) * TAU;
+    const r = i % 2 === 0 ? radius : radius * 0.55;
+    const px = x + Math.cos(a) * r;
+    const py = y + Math.sin(a) * r;
     if (i === 0) ctx.moveTo(px, py);
     else ctx.lineTo(px, py);
   }
@@ -46,17 +71,17 @@ export function createRenderer(canvas) {
   let dpr = 1;
 
   // A fixed-seed starfield: the same sky every load, three depths drifting.
-  const starRandom = createRandom(1337);
+  const skyRandom = createRandom(1337);
   const stars = [];
   for (let layer = 0; layer < 3; layer += 1) {
     const count = [70, 46, 26][layer];
     for (let i = 0; i < count; i += 1) {
       stars.push({
-        x: starRandom.next(),
-        y: starRandom.next(),
+        x: skyRandom.next(),
+        y: skyRandom.next(),
         size: [1, 1.5, 2.2][layer],
         layer,
-        phase: starRandom.next() * TAU,
+        phase: skyRandom.next() * TAU,
         speed: [0.4, 0.8, 1.4][layer],
       });
     }
@@ -80,7 +105,7 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
-  function drawBackground(time) {
+  function paintBackground(time) {
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
     gradient.addColorStop(0, COLORS.backgroundTop);
     gradient.addColorStop(1, COLORS.backgroundBottom);
@@ -111,14 +136,14 @@ export function createRenderer(canvas) {
     ctx.globalAlpha = 1;
   }
 
-  function drawShip(x, y, angle, radius, color, flame) {
+  function paintPlayerShip(x, y, angle, radius, color, flame) {
     ctx.save();
     ctx.shadowColor = color;
     ctx.shadowBlur = 16;
     ctx.fillStyle = 'rgba(6, 10, 24, 0.9)';
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
-    shipPath(ctx, x, y, angle, radius, flame);
+    dartPath(ctx, x, y, angle, radius, flame);
     ctx.fill();
     ctx.stroke();
     if (flame) {
@@ -143,42 +168,116 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
-  function drawEnemy(enemy, time) {
+  // The ring that warns where a ship is about to warp in, shrinking as the
+  // warp finishes. While it shows, the ship is not solid yet.
+  function paintWarpRing(enemy, time) {
+    const progress = 1 - enemy.warp / 0.55;
+    const radius = enemy.radius * (2.2 - progress * 1.2);
+    ctx.save();
+    ctx.globalAlpha = 0.35 + 0.55 * (1 - progress);
+    ctx.strokeStyle = enemy.color;
+    ctx.shadowColor = enemy.color;
+    ctx.shadowBlur = 12;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 6]);
+    ctx.lineDashOffset = -time * 40;
+    ctx.beginPath();
+    ctx.arc(enemy.x, enemy.y, radius, 0, TAU);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function paintEnemy(enemy, time) {
     const spec = ENEMIES[enemy.kind];
     const color = spec.color;
+    if (enemy.warp > 0) {
+      paintWarpRing(enemy, time);
+      return;
+    }
+    // The dasher aims its lunge out loud: a dashed line toward the player
+    // while it pauses, so the dash never comes out of nowhere.
+    if (enemy.kind === 'dasher' && enemy.dashState === 'stalk') {
+      const pulse = 0.45 + 0.4 * Math.sin(time * 14);
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10, 8]);
+      ctx.beginPath();
+      ctx.moveTo(enemy.x, enemy.y);
+      ctx.lineTo(enemy.x + Math.cos(enemy.dashAngle) * 280, enemy.y + Math.sin(enemy.dashAngle) * 280);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
     const pulse = 1 + 0.08 * Math.sin(time * 6 + enemy.phase);
     const radius = enemy.radius * pulse;
-    const fresh = enemy.spawnAge < 0.4;
     ctx.save();
-    if (fresh) ctx.globalAlpha = 0.35 + 0.65 * (enemy.spawnAge / 0.4);
     ctx.shadowColor = color;
     ctx.shadowBlur = 18;
     ctx.strokeStyle = color;
     ctx.fillStyle = 'rgba(8, 8, 20, 0.92)';
     ctx.lineWidth = 2.5;
     if (enemy.kind === 'chaser' || enemy.kind === 'mini') {
-      shipPath(ctx, enemy.x, enemy.y, enemy.angle, radius, 0);
+      dartPath(ctx, enemy.x, enemy.y, enemy.angle, radius, 0);
       ctx.fill();
       ctx.stroke();
     } else if (enemy.kind === 'weaver') {
-      polygon(ctx, enemy.x, enemy.y, enemy.angle, radius, 4);
+      polyPath(ctx, enemy.x, enemy.y, enemy.angle, radius, 4);
       ctx.fill();
       ctx.stroke();
     } else if (enemy.kind === 'splitter') {
-      polygon(ctx, enemy.x, enemy.y, enemy.angle + time * 0.8, radius, 6);
+      polyPath(ctx, enemy.x, enemy.y, enemy.angle + time * 0.8, radius, 6);
       ctx.fill();
       ctx.stroke();
       ctx.fillStyle = color;
-      polygon(ctx, enemy.x, enemy.y, -enemy.angle, radius * 0.4, 6);
+      polyPath(ctx, enemy.x, enemy.y, -enemy.angle, radius * 0.4, 6);
       ctx.fill();
     } else if (enemy.kind === 'shooter') {
-      polygon(ctx, enemy.x, enemy.y, enemy.angle, radius, 5);
+      polyPath(ctx, enemy.x, enemy.y, enemy.angle, radius, 5);
       ctx.fill();
       ctx.stroke();
       ctx.beginPath();
       ctx.moveTo(enemy.x, enemy.y);
       ctx.lineTo(enemy.x + Math.cos(enemy.angle) * (radius + 8), enemy.y + Math.sin(enemy.angle) * (radius + 8));
       ctx.stroke();
+    } else if (enemy.kind === 'dasher') {
+      // A slim dart, nose first along its dash line.
+      ctx.save();
+      ctx.translate(enemy.x, enemy.y);
+      ctx.rotate(enemy.dashState === 'dash' ? enemy.dashAngle : enemy.angle);
+      ctx.beginPath();
+      ctx.moveTo(radius * 1.5, 0);
+      ctx.lineTo(-radius * 0.7, radius * 0.5);
+      ctx.lineTo(-radius * 0.3, 0);
+      ctx.lineTo(-radius * 0.7, -radius * 0.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    } else if (enemy.kind === 'orbiter') {
+      // A ring ship: two circles, one spinning slowly inside the other.
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, radius, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, radius * 0.55, 0, TAU);
+      ctx.stroke();
+      ctx.fillStyle = color;
+      const dotA = enemy.orbitAngle;
+      ctx.beginPath();
+      ctx.arc(enemy.x + Math.cos(dotA) * radius * 0.55, enemy.y + Math.sin(dotA) * radius * 0.55, 2.5, 0, TAU);
+      ctx.fill();
+    }
+    // A hit flashes the ship pale for a beat.
+    if (enemy.hitFlash > 0) {
+      ctx.globalAlpha = Math.min(1, enemy.hitFlash * 6);
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, radius * 0.9, 0, TAU);
+      ctx.fill();
     }
     ctx.fillStyle = color;
     ctx.beginPath();
@@ -187,9 +286,61 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
-  function drawPowerup(powerup, time) {
-    const colors = { shield: COLORS.shield, rapid: COLORS.rapid, spread: COLORS.spread, bomb: COLORS.bomb };
-    const glyphs = { shield: 'S', rapid: 'R', spread: '3', bomb: 'B' };
+  function paintBoss(boss, time) {
+    if (boss.warp > 0) {
+      paintWarpRing(boss, time);
+      return;
+    }
+    const color = boss.color;
+    const telegraphing = boss.telegraph > 0;
+    const flash = telegraphing && Math.floor(time * 10) % 2 === 0;
+    const radius = boss.radius * (1 + 0.04 * Math.sin(time * 5));
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 30;
+    ctx.strokeStyle = flash ? '#ffffff' : color;
+    ctx.fillStyle = flash ? 'rgba(120, 20, 40, 0.95)' : 'rgba(10, 6, 20, 0.95)';
+    ctx.lineWidth = 3;
+    starPath(ctx, boss.x, boss.y, boss.angle, radius, boss.prime ? 10 : 8);
+    ctx.fill();
+    ctx.stroke();
+    // Inner ring and core eye, turning with the ship.
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(boss.x, boss.y, radius * 0.55, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = flash ? '#ffffff' : color;
+    ctx.beginPath();
+    ctx.arc(boss.x, boss.y, radius * 0.22 + Math.sin(time * 4) * 2, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(boss.x, boss.y, radius * 0.1, 0, TAU);
+    ctx.fill();
+    if (boss.hitFlash > 0) {
+      ctx.globalAlpha = Math.min(1, boss.hitFlash * 5);
+      ctx.fillStyle = '#ffffff';
+      starPath(ctx, boss.x, boss.y, boss.angle, radius, boss.prime ? 10 : 8);
+      ctx.fill();
+    }
+    ctx.restore();
+    // The telegraph ring: it closes in on the boss as the attack approaches.
+    if (telegraphing) {
+      const progress = 1 - boss.telegraph / 0.7;
+      ctx.save();
+      ctx.globalAlpha = 0.5 + 0.5 * Math.sin(time * 16);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(boss.x, boss.y, radius + 44 - progress * 30, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function paintPowerup(powerup, time) {
+    const colors = { shield: COLORS.shield, rapid: COLORS.rapid, spread: COLORS.spread, bomb: COLORS.bomb, chrono: COLORS.chrono };
+    const glyphs = { shield: 'S', rapid: 'R', spread: '3', bomb: 'B', chrono: 'C' };
     const color = colors[powerup.kind];
     const bob = Math.sin(time * 3 + powerup.x) * 3;
     const blink = powerup.life < 2 ? (Math.sin(time * 14) > 0 ? 1 : 0.35) : 1;
@@ -204,6 +355,12 @@ export function createRenderer(canvas) {
     ctx.arc(powerup.x, powerup.y + bob, powerup.radius, 0, TAU);
     ctx.fill();
     ctx.stroke();
+    if (powerup.kind === 'chrono') {
+      // A little clock face around the C.
+      ctx.beginPath();
+      ctx.arc(powerup.x, powerup.y + bob, powerup.radius * 0.62, 0, TAU);
+      ctx.stroke();
+    }
     ctx.fillStyle = color;
     ctx.font = '700 13px system-ui, sans-serif';
     ctx.textAlign = 'center';
@@ -212,7 +369,7 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
-  function drawLives(lives) {
+  function paintLives(lives) {
     for (let i = 0; i < 3; i += 1) {
       const x = width - 30 - i * 30;
       const y = 30;
@@ -223,21 +380,53 @@ export function createRenderer(canvas) {
         ctx.strokeStyle = COLORS.player;
         ctx.fillStyle = 'rgba(6, 14, 24, 0.9)';
         ctx.lineWidth = 1.8;
-        shipPath(ctx, x, y, -Math.PI / 2, 10, 0);
+        dartPath(ctx, x, y, -Math.PI / 2, 10, 0);
         ctx.fill();
         ctx.stroke();
       } else {
         ctx.globalAlpha = 0.22;
         ctx.strokeStyle = COLORS.dimText;
         ctx.lineWidth = 1.5;
-        shipPath(ctx, x, y, -Math.PI / 2, 10, 0);
+        dartPath(ctx, x, y, -Math.PI / 2, 10, 0);
         ctx.stroke();
       }
       ctx.restore();
     }
   }
 
-  function drawHud(state, best) {
+  // The boss health bar: the Tyrant's name and a long bar across the top.
+  function paintBossBar(boss) {
+    if (!boss) return;
+    const barWidth = Math.min(460, width * 0.42);
+    const x = (width - barWidth) / 2;
+    const y = 84;
+    const fraction = Math.max(0, boss.hp / boss.maxHp);
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '800 13px system-ui, sans-serif';
+    ctx.fillStyle = boss.enraged ? '#ff3b30' : boss.color;
+    ctx.shadowColor = boss.color;
+    ctx.shadowBlur = 10;
+    ctx.fillText(boss.enraged ? `${boss.name} — ENRAGED` : boss.name, width / 2, y - 12);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(8, 10, 26, 0.85)';
+    ctx.strokeStyle = boss.color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(x, y, barWidth, 12, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = boss.enraged ? '#ff3b30' : boss.color;
+    if (fraction > 0.02) {
+      ctx.beginPath();
+      ctx.roundRect(x + 2, y + 2, (barWidth - 4) * fraction, 8, 4);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function paintHud(state, best) {
     ctx.save();
     ctx.textBaseline = 'middle';
     ctx.fillStyle = COLORS.text;
@@ -254,7 +443,7 @@ export function createRenderer(canvas) {
       const fraction = state.comboTimer / COMBO_WINDOW;
       ctx.fillStyle = COLORS.gold;
       ctx.font = '800 16px system-ui, sans-serif';
-      ctx.fillText(`COMBO x${state.multiplier}`, 20, 78);
+      ctx.fillText(state.multiplier >= MAX_MULTIPLIER ? `COMBO x${state.multiplier} — MAX!` : `COMBO x${state.multiplier}`, 20, 78);
       ctx.fillStyle = 'rgba(255, 211, 25, 0.25)';
       ctx.fillRect(20, 90, 120, 5);
       ctx.fillStyle = COLORS.gold;
@@ -266,13 +455,14 @@ export function createRenderer(canvas) {
     ctx.fillText(`WAVE ${state.wave} / ${WIN_WAVE}`, width / 2, 28);
     ctx.font = '600 12px system-ui, sans-serif';
     ctx.fillStyle = COLORS.dimText;
-    ctx.fillText(`${state.enemies.length} HOSTILES`, width / 2, 52);
-    drawLives(state.lives);
+    ctx.fillText(`${state.enemies.length + (state.boss ? 1 : 0)} HOSTILES`, width / 2, 52);
+    paintBossBar(state.boss);
+    paintLives(state.lives);
     ctx.textAlign = 'right';
     ctx.font = '600 12px system-ui, sans-serif';
     ctx.fillStyle = COLORS.dimText;
     ctx.fillText('P pause · M mute · R restart', width - 20, height - 18);
-    // Active power-up timers, bottom left.
+    // Active power-up timers, bottom left — Chrono gets its own chip.
     let chipX = 20;
     const chips = [];
     const player = state.player;
@@ -280,6 +470,7 @@ export function createRenderer(canvas) {
       if (player.shield) chips.push(['SHIELD', COLORS.shield]);
       if (state.time < player.rapidUntil) chips.push([`RAPID ${Math.ceil(player.rapidUntil - state.time)}s`, COLORS.rapid]);
       if (state.time < player.spreadUntil) chips.push([`SPREAD ${Math.ceil(player.spreadUntil - state.time)}s`, COLORS.spread]);
+      if (state.time < player.chronoUntil) chips.push([`CHRONO ${Math.ceil(player.chronoUntil - state.time)}s`, COLORS.chrono]);
     }
     ctx.textAlign = 'left';
     for (const [label, color] of chips) {
@@ -296,69 +487,121 @@ export function createRenderer(canvas) {
       ctx.fillText(label, chipX + 9, height - 27);
       chipX += chipWidth + 8;
     }
+    // One life left: a pulsing warning under the wave counter.
+    if (state.lives === 1) {
+      const pulse = 0.55 + 0.45 * Math.sin(state.time * 6);
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.textAlign = 'center';
+      ctx.font = '800 15px system-ui, sans-serif';
+      ctx.fillStyle = COLORS.danger;
+      ctx.shadowColor = COLORS.danger;
+      ctx.shadowBlur = 12;
+      ctx.fillText('⚠ LAST LIFE ⚠', width / 2, state.boss ? 118 : 78);
+      ctx.restore();
+    }
     ctx.restore();
   }
 
-  function drawBanner(state) {
+  function paintBanner(state) {
     if (state.bannerTimer <= 0 || !state.banner) return;
     const alpha = Math.min(1, state.bannerTimer * 2);
     ctx.save();
     ctx.globalAlpha = alpha;
-    const isClear = state.banner.includes('CLEARED');
-    glowText(state.banner, width / 2, height * 0.3, '800 44px system-ui, sans-serif', isClear ? COLORS.gold : COLORS.text, 24);
+    const isClear = state.banner.includes('CLEARED') || state.banner.includes('DESTROYED');
+    glowText(state.banner, width / 2, height * 0.3, '800 40px system-ui, sans-serif', isClear ? COLORS.gold : COLORS.text, 24);
+    if (state.bannerSub) {
+      glowText(state.bannerSub, width / 2, height * 0.3 + 40, '600 16px system-ui, sans-serif', COLORS.dimText, 8);
+    }
     ctx.restore();
   }
 
-  function dim(alpha) {
+  function shade(alpha) {
     ctx.fillStyle = `rgba(3, 5, 14, ${alpha})`;
     ctx.fillRect(0, 0, width, height);
   }
 
-  function drawTitle(state, best) {
-    dim(0.62);
+  // Full-screen overlays for feel: the red hurt vignette, the soft red
+  // edge while on the last life, and the cool Chrono tint.
+  function paintOverlays(state) {
+    const player = state.player;
+    const chronoOn = player && state.time < player.chronoUntil;
+    if (chronoOn) {
+      ctx.save();
+      ctx.fillStyle = `rgba(122, 215, 255, ${0.05 + 0.02 * Math.sin(state.time * 3)})`;
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+    }
+    if (state.hurtFlash > 0 || state.lives === 1) {
+      const edge = state.lives === 1 ? 0.10 + 0.05 * Math.sin(state.time * 5) : 0;
+      const strength = Math.max(state.hurtFlash * 0.6, edge);
+      if (strength > 0.01) {
+        const gradient = ctx.createRadialGradient(
+          width / 2, height / 2, Math.min(width, height) * 0.42,
+          width / 2, height / 2, Math.max(width, height) * 0.72,
+        );
+        gradient.addColorStop(0, 'rgba(255, 40, 40, 0)');
+        gradient.addColorStop(1, `rgba(255, 40, 40, ${strength})`);
+        ctx.save();
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, width, height);
+        ctx.restore();
+      }
+    }
+  }
+
+  function paintTitle(state, best) {
+    shade(0.62);
     const cx = width / 2;
-    glowText('VOIDLIGHT', cx, height * 0.26, '900 92px system-ui, sans-serif', '#35f0ff', 30);
-    glowText('N E O N   A R E N A', cx, height * 0.26 + 62, '700 22px system-ui, sans-serif', '#ff5df2', 16);
-    glowText('Survive 10 waves. Clear Wave 10 to win.', cx, height * 0.44, '600 19px system-ui, sans-serif', COLORS.text, 8);
+    glowText('VOIDLIGHT', cx, height * 0.24, '900 92px system-ui, sans-serif', '#35f0ff', 30);
+    glowText('N E O N   A R E N A', cx, height * 0.24 + 62, '700 22px system-ui, sans-serif', '#ff5df2', 16);
+    glowText('Survive 10 waves. Clear Wave 10 to win.', cx, height * 0.42, '600 19px system-ui, sans-serif', COLORS.text, 8);
+    glowText('Face the VOID TYRANT on Wave 5 — and the TYRANT PRIME on Wave 10.', cx, height * 0.42 + 28, '700 16px system-ui, sans-serif', COLORS.gold, 10);
     ctx.save();
     ctx.font = '500 16px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = COLORS.dimText;
     ctx.fillText('WASD / ARROWS — move      MOUSE — aim      HOLD CLICK / SPACE — fire', cx, height * 0.52);
-    ctx.fillText('Grab power-ups:  S shield   R rapid fire   3 spread shot   B void bomb', cx, height * 0.52 + 26);
+    ctx.fillText('Grab power-ups:  S shield   R rapid fire   3 spread shot   B void bomb   C chrono', cx, height * 0.52 + 26);
+    ctx.fillText('Watch for the warp rings — nothing attacks out of nowhere.', cx, height * 0.52 + 52);
     ctx.restore();
     const pulse = 0.65 + 0.35 * Math.sin(state.time * 3.2);
     ctx.save();
     ctx.globalAlpha = pulse;
-    glowText('▶  CLICK OR PRESS ENTER TO START', cx, height * 0.68, '800 24px system-ui, sans-serif', COLORS.gold, 18);
+    glowText('▶  CLICK OR PRESS ENTER TO START', cx, height * 0.70, '800 24px system-ui, sans-serif', COLORS.gold, 18);
     ctx.restore();
-    if (best > 0) glowText(`BEST  ${best}`, cx, height * 0.78, '700 18px system-ui, sans-serif', COLORS.dimText, 6);
+    if (best > 0) glowText(`BEST  ${best}`, cx, height * 0.80, '700 18px system-ui, sans-serif', COLORS.dimText, 6);
     glowText('An original arcade game — no downloads, no network, just you and the void.', cx, height - 28, '500 13px system-ui, sans-serif', COLORS.dimText, 0);
   }
 
-  function drawOver(state, best, won) {
-    dim(won ? 0.45 : 0.66);
+  function paintOver(state, best, won) {
+    shade(won ? 0.45 : 0.66);
     const cx = width / 2;
     if (won) {
-      glowText('VOID MASTER!', cx, height * 0.3, '900 72px system-ui, sans-serif', COLORS.gold, 30);
-      glowText('YOU WIN — ALL 10 WAVES CLEARED', cx, height * 0.3 + 56, '700 20px system-ui, sans-serif', COLORS.text, 12);
+      glowText('VOID MASTER!', cx, height * 0.26, '900 72px system-ui, sans-serif', COLORS.gold, 30);
+      glowText('YOU WIN — ALL 10 WAVES CLEARED', cx, height * 0.26 + 56, '700 20px system-ui, sans-serif', COLORS.text, 12);
+      const tyrant = state.bossName || 'VOID TYRANT PRIME';
+      glowText(`${tyrant} DESTROYED`, cx, height * 0.26 + 88, '700 18px system-ui, sans-serif', '#ff5df2', 12);
     } else {
       glowText('GAME OVER', cx, height * 0.3, '900 72px system-ui, sans-serif', COLORS.accent, 30);
       glowText('THE VOID CLAIMS ANOTHER PILOT', cx, height * 0.3 + 56, '700 18px system-ui, sans-serif', COLORS.text, 10);
     }
     const isBest = state.score >= best && state.score > 0;
     glowText(`SCORE  ${state.score}`, cx, height * 0.5, '800 34px system-ui, sans-serif', COLORS.text, 14);
-    glowText(isBest ? '★ NEW BEST ★' : `BEST  ${best}`, cx, height * 0.5 + 42, '700 18px system-ui, sans-serif', isBest ? COLORS.gold : COLORS.dimText, 10);
+    if (won && state.bossBonus > 0) {
+      glowText(`BOSS BONUS  +${state.bossBonus}`, cx, height * 0.5 + 40, '800 20px system-ui, sans-serif', COLORS.gold, 12);
+    }
+    glowText(isBest ? '★ NEW BEST ★' : `BEST  ${best}`, cx, height * 0.5 + (won && state.bossBonus > 0 ? 78 : 42), '700 18px system-ui, sans-serif', isBest ? COLORS.gold : COLORS.dimText, 10);
     ctx.save();
     ctx.font = '600 16px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = COLORS.dimText;
-    ctx.fillText(`Waves cleared: ${won ? WIN_WAVE : state.wave - 1} / ${WIN_WAVE}      Kills: ${state.kills}      Shots: ${state.shotsFired}`, cx, height * 0.5 + 82);
+    ctx.fillText(`Waves cleared: ${won ? WIN_WAVE : state.wave - 1} / ${WIN_WAVE}      Kills: ${state.kills}      Shots: ${state.shotsFired}`, cx, height * 0.5 + (won && state.bossBonus > 0 ? 116 : 82));
     ctx.restore();
     const pulse = 0.65 + 0.35 * Math.sin(state.time * 3.2);
     ctx.save();
     ctx.globalAlpha = pulse;
-    glowText('PRESS ENTER OR CLICK TO PLAY AGAIN', cx, height * 0.72, '800 22px system-ui, sans-serif', COLORS.gold, 16);
+    glowText('PRESS ENTER OR CLICK TO PLAY AGAIN', cx, height * 0.74, '800 22px system-ui, sans-serif', COLORS.gold, 16);
     ctx.restore();
   }
 
@@ -376,16 +619,17 @@ export function createRenderer(canvas) {
       if (state.shake > 0.2) {
         ctx.translate((Math.random() - 0.5) * state.shake, (Math.random() - 0.5) * state.shake);
       }
-      drawBackground(state.time);
-      for (const powerup of state.powerups) drawPowerup(powerup, state.time);
-      for (const enemy of state.enemies) drawEnemy(enemy, state.time);
+      paintBackground(state.time);
+      for (const powerup of state.powerups) paintPowerup(powerup, state.time);
+      for (const enemy of state.enemies) paintEnemy(enemy, state.time);
+      if (state.boss) paintBoss(state.boss, state.time);
       if (state.player && screen !== 'over') {
         const player = state.player;
         const blink = player.invuln > 0 && Math.floor(state.time * 12) % 2 === 0;
         ctx.save();
         if (blink) ctx.globalAlpha = 0.35;
         const flame = player.thrust ? 0.6 + Math.random() * 0.6 : 0;
-        drawShip(player.x, player.y, player.angle, player.radius, COLORS.player, flame);
+        paintPlayerShip(player.x, player.y, player.angle, player.radius, COLORS.player, flame);
         if (player.shield) {
           ctx.strokeStyle = COLORS.shield;
           ctx.shadowColor = COLORS.shield;
@@ -399,6 +643,23 @@ export function createRenderer(canvas) {
       }
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
+      // The muzzle flash: a bright star where the bullets leave the ship.
+      if (state.muzzle) {
+        const m = state.muzzle;
+        const strength = m.timer / 0.07;
+        ctx.fillStyle = `rgba(200, 251, 255, ${strength})`;
+        ctx.shadowColor = '#c8fbff';
+        ctx.shadowBlur = 16;
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, 7 * strength + 2, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = `rgba(255, 255, 255, ${strength})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(m.x - Math.cos(m.angle) * 10, m.y - Math.sin(m.angle) * 10);
+        ctx.lineTo(m.x + Math.cos(m.angle) * 12, m.y + Math.sin(m.angle) * 12);
+        ctx.stroke();
+      }
       for (const bullet of state.bullets) {
         ctx.strokeStyle = COLORS.bullet;
         ctx.shadowColor = COLORS.bullet;
@@ -422,18 +683,20 @@ export function createRenderer(canvas) {
       if (particles) particles.draw(ctx);
       ctx.restore();
 
+      paintOverlays(state);
+
       if (screen === 'play' || screen === 'paused') {
-        drawHud(state, best);
-        drawBanner(state);
+        paintHud(state, best);
+        paintBanner(state);
       }
-      if (screen === 'title') drawTitle(state, best);
+      if (screen === 'title') paintTitle(state, best);
       if (screen === 'paused') {
-        dim(0.55);
+        shade(0.55);
         glowText('PAUSED', width / 2, height * 0.42, '900 64px system-ui, sans-serif', COLORS.text, 24);
         glowText('Press P to resume', width / 2, height * 0.42 + 56, '600 18px system-ui, sans-serif', COLORS.dimText, 8);
       }
-      if (screen === 'over') drawOver(state, best, false);
-      if (screen === 'win') drawOver(state, best, true);
+      if (screen === 'over') paintOver(state, best, false);
+      if (screen === 'win') paintOver(state, best, true);
     },
   };
 }

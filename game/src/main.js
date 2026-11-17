@@ -1,15 +1,35 @@
-// Boot and the one loop: input is sampled every frame, the world advances in
-// fixed 1/60 s steps (several in a slow frame, none in a fast one), and the
-// renderer paints what is there. The game moves between five screens: title,
-// play, paused, game over and victory.
+// Boot and the one loop: input is sampled every frame, the world advances
+// in fixed 1/60 s steps (several in a slow frame, none in a fast one), and
+// the renderer paints what is there. The game moves between five screens:
+// title, play, paused, game over and victory.
 //
 // ?seed=N fixes the falling pattern. ?shot=start|play|win|end (with &seed=N)
 // stages that scene instead of running the loop, paints it twice and sets
 // window.__shotReady for a screenshot.
+//
+// v2: the main loop also answers the new world events — the boss roar when
+// a Tyrant warps in, the ping before its attacks, the dasher's whoosh, the
+// Chrono shimmer — and plays a low heartbeat while the player is down to
+// their last life.
 
 import { BEST_KEY, LIVES, STEP, SCREENS } from './config.js';
 import { createRandom } from './random.js';
-import { createWorld, EVENT_ENEMY_SHOOT, EVENT_HIT, EVENT_OVER, EVENT_POWERUP, EVENT_SHOOT, EVENT_WAVE_CLEAR, EVENT_WIN } from './world.js';
+import {
+  createWorld,
+  EVENT_BOSS_DIE,
+  EVENT_BOSS_SPAWN,
+  EVENT_BOSS_TELEGRAPH,
+  EVENT_CHRONO,
+  EVENT_DASH,
+  EVENT_ENEMY_SHOOT,
+  EVENT_HIT,
+  EVENT_MAX_COMBO,
+  EVENT_OVER,
+  EVENT_POWERUP,
+  EVENT_SHOOT,
+  EVENT_WAVE_CLEAR,
+  EVENT_WIN,
+} from './world.js';
 import { ACTION_CONFIRM, ACTION_MUTE, ACTION_PAUSE, ACTION_RESTART, createInput } from './input.js';
 import { createRenderer } from './render.js';
 import { createParticles } from './particles.js';
@@ -18,6 +38,8 @@ import { stageShot } from './shots.js';
 
 /** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
 const MAX_FRAME = 0.25;
+/** How often the last-life heartbeat thumps, in seconds. */
+const HEARTBEAT_GAP = 0.95;
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -81,6 +103,8 @@ function runGame() {
   let muted = false;
   let accumulator = 0;
   let last = performance.now();
+  let heartbeatTimer = 0;
+  let chronoTickTimer = 0;
 
   // Screen readers (and anyone watching the page's text) hear the screen
   // changes and each hit.
@@ -93,6 +117,7 @@ function runGame() {
     world.reset();
     particles.clear();
     accumulator = 0;
+    heartbeatTimer = 0;
     screen = SCREENS.PLAY;
     announce(`Playing. ${LIVES} lives. Clear wave 10 to win.`);
   }
@@ -119,6 +144,12 @@ function runGame() {
     if (fx.events & EVENT_HIT) audio.hit();
     if (fx.events & EVENT_POWERUP) audio.pickup();
     if (fx.events & EVENT_WAVE_CLEAR) audio.waveClear();
+    if (fx.events & EVENT_BOSS_SPAWN) audio.bossRoar();
+    if (fx.events & EVENT_BOSS_TELEGRAPH) audio.telegraph();
+    if (fx.events & EVENT_BOSS_DIE) audio.bossDie();
+    if (fx.events & EVENT_DASH) audio.dash();
+    if (fx.events & EVENT_CHRONO) audio.chrono();
+    if (fx.events & EVENT_MAX_COMBO) announce('Maximum combo, times five.');
   }
 
   function handleActions() {
@@ -166,6 +197,24 @@ function runGame() {
     });
     applyFx(fx);
     particles.update(STEP);
+    // The last-life heartbeat: a low thump about once a second.
+    if (world.state.lives === 1) {
+      heartbeatTimer -= STEP;
+      if (heartbeatTimer <= 0) {
+        audio.heartbeat();
+        heartbeatTimer = HEARTBEAT_GAP;
+      }
+    }
+    // A soft shimmer every couple of seconds while Chrono runs.
+    if (world.chronoActive) {
+      chronoTickTimer -= STEP;
+      if (chronoTickTimer <= 0) {
+        audio.chronoTick();
+        chronoTickTimer = 2;
+      }
+    } else {
+      chronoTickTimer = 0;
+    }
     if (fx.events & EVENT_OVER) endGame(false);
     else if (fx.events & EVENT_WIN) endGame(true);
     else if (fx.events & EVENT_HIT) {

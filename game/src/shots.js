@@ -3,6 +3,12 @@
 // victory and a game over — then the main loop paints it twice and raises
 // window.__shotReady. Every placement is derived from the arena size and a
 // fixed seed, so the same shot always renders the same frame.
+//
+// v2 re-stages the play shot as the wave-10 boss fight: the Void Tyrant
+// Prime filling the top of the arena with its health bar, its aimed orbs
+// in flight, the player firing with spread shot under a Chrono slow, a
+// dasher telegraphing its lunge and an orbiter circling in. The victory
+// shot now shows the boss-defeat flourish with the boss bonus in the stats.
 
 import { SCREENS } from './config.js';
 
@@ -15,6 +21,7 @@ export function stageShot(name, world, particles) {
   state.enemyBullets = [];
   state.powerups = [];
   state.enemies = [];
+  state.boss = null;
   state.shake = 0;
 
   if (name === 'start') {
@@ -30,55 +37,75 @@ export function stageShot(name, world, particles) {
 
   if (name === 'play') {
     world.reset();
-    state.wave = 4;
-    state.waveState = 'fighting';
+    state.wave = 10;
+    state.waveState = 'boss';
     state.spawnQueue = [];
-    state.score = 2450;
-    state.best = Math.max(state.best, 12400);
-    state.combo = 17;
+    state.score = 18450;
+    state.best = Math.max(state.best, 18450);
+    state.combo = 32;
     state.comboTimer = 2.1;
-    state.multiplier = 3;
-    state.lives = 3;
-    state.banner = 'WAVE 4';
-    state.bannerTimer = 1.2;
+    state.multiplier = 5;
+    state.lives = 2;
+    state.banner = 'VOID TYRANT PRIME';
+    state.bannerSub = 'Destroy the Prime to win';
+    state.bannerTimer = 1.6;
     const player = state.player;
     player.x = width * 0.42;
-    player.y = height * 0.58;
-    player.angle = -0.5;
+    player.y = height * 0.62;
+    player.angle = -0.9;
     player.thrust = 1;
     player.spreadUntil = state.time + 6;
-    const spots = [
-      ['chaser', 0.68, 0.3, -2.4],
-      ['weaver', 0.78, 0.52, 2.8],
-      ['splitter', 0.6, 0.18, 0.4],
-      ['shooter', 0.85, 0.72, -2.9],
-      ['chaser', 0.24, 0.26, 1.2],
-      ['weaver', 0.16, 0.62, 0.9],
-      ['splitter', 0.34, 0.82, -0.6],
-      ['mini', 0.55, 0.42, 2.2],
-    ];
-    for (const [kind, fx, fy, angle] of spots) {
-      world.addEnemy(kind, width * fx, height * fy);
-      const enemy = state.enemies[state.enemies.length - 1];
-      enemy.angle = angle;
-      enemy.vx = Math.cos(angle + 1.2) * 40;
-      enemy.vy = Math.sin(angle + 1.2) * 40;
-    }
+    player.chronoUntil = state.time + 4;
+    // The Prime itself, mid-fight: just over half health, telegraphing its
+    // next attack so the warning ring shows.
+    const boss = world.addBoss(true, width * 0.62, height * 0.30);
+    boss.hp = 58;
+    boss.warp = 0;
+    boss.telegraph = 0.45;
+    boss.pendingAttack = 'fan';
+    boss.angle = 0.6;
+    // Its court: a dasher winding up a lunge, an orbiter circling, and two
+    // regular ships closing in.
+    const dasher = world.addEnemy('dasher', width * 0.24, height * 0.34);
+    dasher.dashState = 'stalk';
+    dasher.dashTimer = 0.5;
+    dasher.dashAngle = Math.atan2(player.y - height * 0.34, player.x - width * 0.24);
+    dasher.angle = dasher.dashAngle;
+    const orbiter = world.addEnemy('orbiter', width * 0.84, height * 0.58);
+    orbiter.orbitAngle = -0.8;
+    const chaser = world.addEnemy('chaser', width * 0.78, height * 0.18);
+    chaser.angle = 2.6;
+    const shooter = world.addEnemy('shooter', width * 0.16, height * 0.72);
+    shooter.angle = -0.4;
+    // The player's spread fire, climbing toward the boss.
     const shots = [
-      [-0.5, 120],
-      [-0.34, 150],
-      [-0.66, 90],
-      [-0.5, 60],
-      [-0.2, 180],
+      [-0.9, 120],
+      [-0.74, 150],
+      [-1.06, 90],
+      [-0.9, 60],
+      [-0.62, 185],
+      [-1.18, 185],
     ];
     for (const [angle, distance] of shots) {
       world.addBullet(player.x + Math.cos(angle) * distance, player.y + Math.sin(angle) * distance, angle);
     }
-    world.addPowerup('rapid', width * 0.52, height * 0.3);
-    particles.burst(width * 0.72, height * 0.4, '#ff2e63', 22, 300);
+    // The Prime's aimed orbs, already in flight toward the player.
+    const orbAngles = [-2.5, -2.2, -1.9, -2.7, -2.35];
+    for (const angle of orbAngles) {
+      state.enemyBullets.push({
+        x: boss.x + Math.cos(angle) * 90,
+        y: boss.y + Math.sin(angle) * 90,
+        vx: Math.cos(angle) * 155,
+        vy: Math.sin(angle) * 155,
+        radius: 7,
+      });
+    }
+    world.addPowerup('chrono', width * 0.56, height * 0.42);
+    state.muzzle = { x: player.x + Math.cos(player.angle) * 22, y: player.y + Math.sin(player.angle) * 22, angle: player.angle, timer: 0.06 };
+    particles.burst(width * 0.72, height * 0.44, '#ff5df2', 22, 300);
     particles.burst(width * 0.3, height * 0.7, '#ffd319', 14, 220);
-    particles.ring(width * 0.72, height * 0.4, '#ff2e63', 70);
-    particles.text(width * 0.72, height * 0.4 - 26, '+300', '#ff2e63');
+    particles.ring(width * 0.72, height * 0.44, '#ff5df2', 70);
+    particles.text(width * 0.72, height * 0.44 - 26, '+500', '#ff5df2');
     particles.text(width * 0.3, height * 0.7 - 20, '+150', '#ffd319');
     return { screen: SCREENS.PLAY, best: state.best };
   }
@@ -88,11 +115,13 @@ export function stageShot(name, world, particles) {
     state.wave = 10;
     state.waveState = 'clear';
     state.spawnQueue = [];
-    state.score = 12850;
-    state.best = 12850;
-    state.kills = 142;
-    state.shotsFired = 388;
+    state.score = 24850;
+    state.best = 24850;
+    state.kills = 186;
+    state.shotsFired = 512;
     state.lives = 2;
+    state.bossBonus = 10000;
+    state.bossName = 'VOID TYRANT PRIME';
     state.banner = '';
     state.bannerTimer = 0;
     const player = state.player;
@@ -100,10 +129,16 @@ export function stageShot(name, world, particles) {
     player.y = height * 0.56;
     player.angle = -Math.PI / 2;
     player.shield = true;
+    // The flourish where the Prime died: gold and white bursts, wide rings.
     const golds = ['#ffd319', '#35f0ff', '#ff5df2', '#3dff8e', '#ffffff'];
     for (let i = 0; i < 26; i += 1) {
       particles.burst(width * (0.15 + 0.7 * ((i * 37) % 100) / 100), height * (0.2 + 0.55 * ((i * 53) % 100) / 100), golds[i % golds.length], 10, 180);
     }
+    particles.burst(width * 0.5, height * 0.3, '#ff5df2', 40, 380);
+    particles.burst(width * 0.5, height * 0.3, '#ffffff', 26, 300);
+    particles.ring(width * 0.5, height * 0.3, '#ff5df2', 160);
+    particles.ring(width * 0.5, height * 0.3, '#ffffff', 110);
+    particles.text(width * 0.5, height * 0.3 - 30, '+10000', '#ffd319');
     return { screen: SCREENS.WIN, best: state.best };
   }
 
@@ -128,6 +163,6 @@ export function stageShot(name, world, particles) {
   world.addEnemy('chaser', width * 0.3, height * 0.3);
   world.addEnemy('weaver', width * 0.72, height * 0.28);
   world.addEnemy('shooter', width * 0.78, height * 0.7);
-  world.addEnemy('splitter', width * 0.24, height * 0.72);
+  world.addEnemy('dasher', width * 0.24, height * 0.72);
   return { screen: SCREENS.OVER, best: state.best };
 }
