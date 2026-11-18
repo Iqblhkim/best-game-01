@@ -211,6 +211,32 @@ export function createRenderer(canvas) {
       ctx.setLineDash([]);
       ctx.restore();
     }
+    // The sniper aims out loud too: a thin, steady line down its firing
+    // lane while it charges, so the bolt is never a surprise.
+    if (enemy.kind === 'sniper' && enemy.sniperState === 'aim') {
+      const pulse = 0.35 + 0.3 * Math.sin(time * 10);
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.strokeStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 8;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(enemy.x, enemy.y);
+      ctx.lineTo(enemy.x + Math.cos(enemy.sniperAngle) * 520, enemy.y + Math.sin(enemy.sniperAngle) * 520);
+      ctx.stroke();
+      // A small crosshair at the far end of the lane.
+      const cx = enemy.x + Math.cos(enemy.sniperAngle) * 520;
+      const cy = enemy.y + Math.sin(enemy.sniperAngle) * 520;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx - 7, cy);
+      ctx.lineTo(cx + 7, cy);
+      ctx.moveTo(cx, cy - 7);
+      ctx.lineTo(cx, cy + 7);
+      ctx.stroke();
+      ctx.restore();
+    }
     const pulse = 1 + 0.08 * Math.sin(time * 6 + enemy.phase);
     const radius = enemy.radius * pulse;
     ctx.save();
@@ -270,6 +296,28 @@ export function createRenderer(canvas) {
       ctx.beginPath();
       ctx.arc(enemy.x + Math.cos(dotA) * radius * 0.55, enemy.y + Math.sin(dotA) * radius * 0.55, 2.5, 0, TAU);
       ctx.fill();
+    } else if (enemy.kind === 'sniper') {
+      // A four-point star: a diamond with a cross through it, like a
+      // gunsight. It spins slowly while cooling down and locks onto its
+      // aim line while charging.
+      ctx.save();
+      ctx.translate(enemy.x, enemy.y);
+      ctx.rotate(enemy.sniperState === 'aim' ? enemy.sniperAngle : time * 0.7);
+      ctx.beginPath();
+      ctx.moveTo(radius * 1.3, 0);
+      ctx.lineTo(0, radius * 0.45);
+      ctx.lineTo(-radius * 1.3, 0);
+      ctx.lineTo(0, -radius * 0.45);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, -radius * 0.8);
+      ctx.lineTo(0, radius * 0.8);
+      ctx.moveTo(-radius * 0.8, 0);
+      ctx.lineTo(radius * 0.8, 0);
+      ctx.stroke();
+      ctx.restore();
     }
     // A hit flashes the ship pale for a beat.
     if (enemy.hitFlash > 0) {
@@ -339,8 +387,8 @@ export function createRenderer(canvas) {
   }
 
   function paintPowerup(powerup, time) {
-    const colors = { shield: COLORS.shield, rapid: COLORS.rapid, spread: COLORS.spread, bomb: COLORS.bomb, chrono: COLORS.chrono };
-    const glyphs = { shield: 'S', rapid: 'R', spread: '3', bomb: 'B', chrono: 'C' };
+    const colors = { shield: COLORS.shield, rapid: COLORS.rapid, spread: COLORS.spread, bomb: COLORS.bomb, chrono: COLORS.chrono, overdrive: COLORS.overdrive };
+    const glyphs = { shield: 'S', rapid: 'R', spread: '3', bomb: 'B', chrono: 'C', overdrive: 'O' };
     const color = colors[powerup.kind];
     const bob = Math.sin(time * 3 + powerup.x) * 3;
     const blink = powerup.life < 2 ? (Math.sin(time * 14) > 0 ? 1 : 0.35) : 1;
@@ -357,6 +405,12 @@ export function createRenderer(canvas) {
     ctx.stroke();
     if (powerup.kind === 'chrono') {
       // A little clock face around the C.
+      ctx.beginPath();
+      ctx.arc(powerup.x, powerup.y + bob, powerup.radius * 0.62, 0, TAU);
+      ctx.stroke();
+    }
+    if (powerup.kind === 'overdrive') {
+      // A second ring around the O: the rounds inside pierce.
       ctx.beginPath();
       ctx.arc(powerup.x, powerup.y + bob, powerup.radius * 0.62, 0, TAU);
       ctx.stroke();
@@ -471,6 +525,7 @@ export function createRenderer(canvas) {
       if (state.time < player.rapidUntil) chips.push([`RAPID ${Math.ceil(player.rapidUntil - state.time)}s`, COLORS.rapid]);
       if (state.time < player.spreadUntil) chips.push([`SPREAD ${Math.ceil(player.spreadUntil - state.time)}s`, COLORS.spread]);
       if (state.time < player.chronoUntil) chips.push([`CHRONO ${Math.ceil(player.chronoUntil - state.time)}s`, COLORS.chrono]);
+      if (state.time < player.overdriveUntil) chips.push([`OVERDRIVE ${Math.ceil(player.overdriveUntil - state.time)}s`, COLORS.overdrive]);
     }
     ctx.textAlign = 'left';
     for (const [label, color] of chips) {
@@ -562,8 +617,10 @@ export function createRenderer(canvas) {
     ctx.textAlign = 'center';
     ctx.fillStyle = COLORS.dimText;
     ctx.fillText('WASD / ARROWS — move      MOUSE — aim      HOLD CLICK / SPACE — fire', cx, height * 0.52);
-    ctx.fillText('Grab power-ups:  S shield   R rapid fire   3 spread shot   B void bomb   C chrono', cx, height * 0.52 + 26);
+    ctx.fillText('Grab power-ups:  S shield   R rapid fire   3 spread shot   B void bomb   C chrono   O overdrive', cx, height * 0.52 + 26);
     ctx.fillText('Watch for the warp rings — nothing attacks out of nowhere.', cx, height * 0.52 + 52);
+    ctx.fillStyle = COLORS.overdrive;
+    ctx.fillText('NEW — SNIPER SHIPS TAKE AIM · OVERDRIVE ROUNDS PIERCE THROUGH', cx, height * 0.52 + 78);
     ctx.restore();
     const pulse = 0.65 + 0.35 * Math.sin(state.time * 3.2);
     ctx.save();
@@ -574,34 +631,46 @@ export function createRenderer(canvas) {
     glowText('An original arcade game — no downloads, no network, just you and the void.', cx, height - 28, '500 13px system-ui, sans-serif', COLORS.dimText, 0);
   }
 
+  // The run's report card: score, boss bonus and best, then a stats block
+  // — accuracy, best combo, run time, tyrants destroyed — so a win and a
+  // loss both end on something worth reading.
   function paintOver(state, best, won) {
     shade(won ? 0.45 : 0.66);
     const cx = width / 2;
     if (won) {
-      glowText('VOID MASTER!', cx, height * 0.26, '900 72px system-ui, sans-serif', COLORS.gold, 30);
-      glowText('YOU WIN — ALL 10 WAVES CLEARED', cx, height * 0.26 + 56, '700 20px system-ui, sans-serif', COLORS.text, 12);
+      glowText('VOID MASTER!', cx, height * 0.24, '900 72px system-ui, sans-serif', COLORS.gold, 30);
+      glowText('YOU WIN — ALL 10 WAVES CLEARED', cx, height * 0.24 + 56, '700 20px system-ui, sans-serif', COLORS.text, 12);
       const tyrant = state.bossName || 'VOID TYRANT PRIME';
-      glowText(`${tyrant} DESTROYED`, cx, height * 0.26 + 88, '700 18px system-ui, sans-serif', '#ff5df2', 12);
+      glowText(`${tyrant} DESTROYED`, cx, height * 0.24 + 88, '700 18px system-ui, sans-serif', '#ff5df2', 12);
     } else {
-      glowText('GAME OVER', cx, height * 0.3, '900 72px system-ui, sans-serif', COLORS.accent, 30);
-      glowText('THE VOID CLAIMS ANOTHER PILOT', cx, height * 0.3 + 56, '700 18px system-ui, sans-serif', COLORS.text, 10);
+      glowText('GAME OVER', cx, height * 0.28, '900 72px system-ui, sans-serif', COLORS.accent, 30);
+      glowText('THE VOID CLAIMS ANOTHER PILOT', cx, height * 0.28 + 56, '700 18px system-ui, sans-serif', COLORS.text, 10);
     }
     const isBest = state.score >= best && state.score > 0;
-    glowText(`SCORE  ${state.score}`, cx, height * 0.5, '800 34px system-ui, sans-serif', COLORS.text, 14);
+    let y = height * 0.47;
+    glowText(`SCORE  ${state.score}`, cx, y, '800 34px system-ui, sans-serif', COLORS.text, 14);
+    y += 40;
     if (won && state.bossBonus > 0) {
-      glowText(`BOSS BONUS  +${state.bossBonus}`, cx, height * 0.5 + 40, '800 20px system-ui, sans-serif', COLORS.gold, 12);
+      glowText(`BOSS BONUS  +${state.bossBonus}`, cx, y, '800 20px system-ui, sans-serif', COLORS.gold, 12);
+      y += 38;
     }
-    glowText(isBest ? '★ NEW BEST ★' : `BEST  ${best}`, cx, height * 0.5 + (won && state.bossBonus > 0 ? 78 : 42), '700 18px system-ui, sans-serif', isBest ? COLORS.gold : COLORS.dimText, 10);
+    glowText(isBest ? '★ NEW BEST ★' : `BEST  ${best}`, cx, y, '700 18px system-ui, sans-serif', isBest ? COLORS.gold : COLORS.dimText, 10);
+    y += 38;
+    const accuracy = state.shotsFired > 0 ? Math.min(100, Math.round((100 * state.kills) / state.shotsFired)) : 0;
+    const minutes = Math.floor(state.time / 60);
+    const seconds = Math.floor(state.time % 60).toString().padStart(2, '0');
     ctx.save();
     ctx.font = '600 16px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = COLORS.dimText;
-    ctx.fillText(`Waves cleared: ${won ? WIN_WAVE : state.wave - 1} / ${WIN_WAVE}      Kills: ${state.kills}      Shots: ${state.shotsFired}`, cx, height * 0.5 + (won && state.bossBonus > 0 ? 116 : 82));
+    ctx.fillText(`Waves cleared: ${won ? WIN_WAVE : state.wave - 1} / ${WIN_WAVE}      Kills: ${state.kills}      Shots: ${state.shotsFired}`, cx, y);
+    y += 26;
+    ctx.fillText(`Accuracy: ${accuracy}%      Max combo: x${state.maxMultiplier || 1}      Time: ${minutes}:${seconds}      Tyrants down: ${state.bossesKilled || 0}`, cx, y);
     ctx.restore();
     const pulse = 0.65 + 0.35 * Math.sin(state.time * 3.2);
     ctx.save();
     ctx.globalAlpha = pulse;
-    glowText('PRESS ENTER OR CLICK TO PLAY AGAIN', cx, height * 0.74, '800 22px system-ui, sans-serif', COLORS.gold, 16);
+    glowText('PRESS ENTER OR CLICK TO PLAY AGAIN', cx, height * 0.78, '800 22px system-ui, sans-serif', COLORS.gold, 16);
     ctx.restore();
   }
 
@@ -639,6 +708,18 @@ export function createRenderer(canvas) {
           ctx.arc(player.x, player.y, player.radius + 9 + Math.sin(state.time * 5) * 2, 0, TAU);
           ctx.stroke();
         }
+        // Overdrive: a dashed gold ring around the ship while its rounds pierce.
+        if (state.time < player.overdriveUntil) {
+          ctx.strokeStyle = COLORS.overdrive;
+          ctx.shadowColor = COLORS.overdrive;
+          ctx.shadowBlur = 12;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 5]);
+          ctx.beginPath();
+          ctx.arc(player.x, player.y, player.radius + 15 + Math.sin(state.time * 6) * 2, 0, TAU);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
         ctx.restore();
       }
       ctx.save();
@@ -672,6 +753,27 @@ export function createRenderer(canvas) {
         ctx.stroke();
       }
       for (const bullet of state.enemyBullets) {
+        // A sniper bolt is drawn as a fast streak along its flight line,
+        // so it reads as a different threat from a drifting orb.
+        if (bullet.sniper) {
+          const speed = Math.hypot(bullet.vx, bullet.vy) || 1;
+          const ux = bullet.vx / speed;
+          const uy = bullet.vy / speed;
+          ctx.strokeStyle = '#dff7ff';
+          ctx.shadowColor = '#b8f1ff';
+          ctx.shadowBlur = 14;
+          ctx.lineWidth = 3;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(bullet.x - ux * 26, bullet.y - uy * 26);
+          ctx.lineTo(bullet.x, bullet.y);
+          ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(bullet.x, bullet.y, 3, 0, TAU);
+          ctx.fill();
+          continue;
+        }
         ctx.fillStyle = COLORS.enemyBullet;
         ctx.shadowColor = COLORS.enemyBullet;
         ctx.shadowBlur = 12;

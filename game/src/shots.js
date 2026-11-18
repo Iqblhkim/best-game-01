@@ -56,6 +56,7 @@ export function stageShot(name, world, particles) {
     player.thrust = 1;
     player.spreadUntil = state.time + 6;
     player.chronoUntil = state.time + 4;
+    player.overdriveUntil = state.time + 6;
     // The Prime itself, mid-fight: just over half health, telegraphing its
     // next attack so the warning ring shows.
     const boss = world.addBoss(true, width * 0.62, height * 0.30);
@@ -64,13 +65,19 @@ export function stageShot(name, world, particles) {
     boss.telegraph = 0.45;
     boss.pendingAttack = 'fan';
     boss.angle = 0.6;
-    // Its court: a dasher winding up a lunge, an orbiter circling, and two
-    // regular ships closing in.
+    // Its court: a dasher winding up a lunge, an orbiter circling, a
+    // sniper taking aim down its telegraph line, and two regular ships
+    // closing in.
     const dasher = world.addEnemy('dasher', width * 0.24, height * 0.34);
     dasher.dashState = 'stalk';
     dasher.dashTimer = 0.5;
     dasher.dashAngle = Math.atan2(player.y - height * 0.34, player.x - width * 0.24);
     dasher.angle = dasher.dashAngle;
+    const sniper = world.addEnemy('sniper', width * 0.13, height * 0.28);
+    sniper.sniperState = 'aim';
+    sniper.sniperTimer = 0.7;
+    sniper.sniperAngle = Math.atan2(player.y - height * 0.28, player.x - width * 0.13);
+    sniper.angle = sniper.sniperAngle;
     const orbiter = world.addEnemy('orbiter', width * 0.84, height * 0.58);
     orbiter.orbitAngle = -0.8;
     const chaser = world.addEnemy('chaser', width * 0.78, height * 0.18);
@@ -89,7 +96,8 @@ export function stageShot(name, world, particles) {
     for (const [angle, distance] of shots) {
       world.addBullet(player.x + Math.cos(angle) * distance, player.y + Math.sin(angle) * distance, angle);
     }
-    // The Prime's aimed orbs, already in flight toward the player.
+    // The Prime's aimed orbs, already in flight toward the player, plus
+    // one sniper bolt streaking in from the left.
     const orbAngles = [-2.5, -2.2, -1.9, -2.7, -2.35];
     for (const angle of orbAngles) {
       state.enemyBullets.push({
@@ -100,6 +108,15 @@ export function stageShot(name, world, particles) {
         radius: 7,
       });
     }
+    const boltAngle = Math.atan2(player.y - height * 0.28, player.x - width * 0.13);
+    state.enemyBullets.push({
+      x: width * 0.13 + Math.cos(boltAngle) * 190,
+      y: height * 0.28 + Math.sin(boltAngle) * 190,
+      vx: Math.cos(boltAngle) * 430,
+      vy: Math.sin(boltAngle) * 430,
+      radius: 7,
+      sniper: true,
+    });
     world.addPowerup('chrono', width * 0.56, height * 0.42);
     state.muzzle = { x: player.x + Math.cos(player.angle) * 22, y: player.y + Math.sin(player.angle) * 22, angle: player.angle, timer: 0.06 };
     particles.burst(width * 0.72, height * 0.44, '#ff5df2', 22, 300);
@@ -119,6 +136,9 @@ export function stageShot(name, world, particles) {
     state.best = 24850;
     state.kills = 186;
     state.shotsFired = 512;
+    state.time = 412;
+    state.maxMultiplier = 5;
+    state.bossesKilled = 2;
     state.lives = 2;
     state.bossBonus = 10000;
     state.bossName = 'VOID TYRANT PRIME';
@@ -151,6 +171,9 @@ export function stageShot(name, world, particles) {
   state.best = Math.max(state.best, 12400);
   state.kills = 87;
   state.shotsFired = 241;
+  state.time = 265;
+  state.maxMultiplier = 3;
+  state.bossesKilled = 1;
   state.lives = 0;
   state.banner = '';
   state.bannerTimer = 0;
@@ -164,5 +187,8 @@ export function stageShot(name, world, particles) {
   world.addEnemy('weaver', width * 0.72, height * 0.28);
   world.addEnemy('shooter', width * 0.78, height * 0.7);
   world.addEnemy('dasher', width * 0.24, height * 0.72);
+  const endSniper = world.addEnemy('sniper', width * 0.62, height * 0.18);
+  endSniper.sniperState = 'cool';
+  endSniper.sniperTimer = 1;
   return { screen: SCREENS.OVER, best: state.best };
 }

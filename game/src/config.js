@@ -37,7 +37,9 @@ export const WARP_SECONDS = 0.55;
 // Regular enemies: what they pay, how big they are, how many hits they
 // take, how fast they move and the colour they glow. The dasher (a dart
 // that pauses, telegraphs a line, then lunges) and the orbiter (a ring
-// that circles the player and fires aimed orbs) are new in v2.
+// that circles the player and fires aimed orbs) are new in v2. The sniper
+// is new in v3: an ice-white star that holds a long firing distance,
+// takes aim down a thin telegraph line, and fires one very fast bolt.
 export const ENEMIES = {
   chaser: { points: 100, radius: 15, hp: 1, speed: 108, color: '#ff2e63' },
   weaver: { points: 150, radius: 14, hp: 1, speed: 150, color: '#ffd319' },
@@ -46,6 +48,7 @@ export const ENEMIES = {
   shooter: { points: 250, radius: 17, hp: 2, speed: 95, color: '#b967ff' },
   dasher: { points: 175, radius: 14, hp: 1, speed: 150, color: '#ff7a1a' },
   orbiter: { points: 225, radius: 16, hp: 2, speed: 110, color: '#2ee6c8' },
+  sniper: { points: 275, radius: 15, hp: 2, speed: 80, color: '#b8f1ff' },
 };
 export const ENEMY_BULLET_SPEED = 170;
 export const ENEMY_BULLET_RADIUS = 6;
@@ -60,6 +63,16 @@ export const DASHER_RECOVER_SECONDS = 0.85;
 // The orbiter keeps this distance from the player and fires this often.
 export const ORBITER_RANGE = 235;
 export const ORBITER_FIRE_INTERVAL = 2.2;
+
+// The sniper's rhythm: hold a long firing distance and strafe, take aim
+// down a telegraph line for a beat, fire one fast bolt, then cool down.
+// At most two snipers join any one wave, so the player is never fenced in
+// by crossing aim lines.
+export const SNIPER_AIM_SECONDS = 1.1;
+export const SNIPER_COOL_SECONDS = 2.6;
+export const SNIPER_BOLT_SPEED = 430;
+export const SNIPER_MAX_RANGE = 640;
+export const SNIPER_PER_WAVE = 2;
 
 // The two Tyrants. The mid-boss on wave 5 is the Void Tyrant; the final
 // boss on wave 10 is the Void Tyrant Prime — bigger, tougher, faster, and
@@ -98,15 +111,22 @@ export const BOSS_ENRAGE_FACTOR = 0.62;
 export const BOSS_ORB_SPEED = 155;
 
 // Power-ups. A kill drops one 12% of the time, from a table shared by all
-// five kinds. Shield blocks one hit; rapid doubles the fire rate; spread
+// six kinds. Shield blocks one hit; rapid doubles the fire rate; spread
 // fires three shots at once; bomb clears the field; chrono — new in v2 —
-// slows every enemy and enemy bullet to 40% while the player stays fast.
+// slows every enemy and enemy bullet to 40% while the player stays fast;
+// overdrive — new in v3 — makes the player's rounds pierce through one
+// extra ship and quickens the trigger for 8 seconds.
 export const DROP_CHANCE = 0.12;
 export const POWERUP_SECONDS = 9;
 export const POWERUP_FALL_SPEED = 55;
 export const POWERUP_RADIUS = 13;
 export const CHRONO_SECONDS = 6;
 export const CHRONO_SLOW = 0.4;
+// While Chrono runs, the player's own bullets fly a quarter faster too:
+// the time dilation favours the pilot, not just the slowdown.
+export const CHRONO_BULLET_BOOST = 1.25;
+export const OVERDRIVE_SECONDS = 8;
+export const OVERDRIVE_FIRE_FACTOR = 0.6;
 
 // A wave clear and a boss kill both freeze the action for a beat: enemies
 // crawl at this fraction of speed while the slow-motion lasts.
@@ -130,6 +150,8 @@ export const COLORS = {
   spread: '#ff5df2',
   bomb: '#ffffff',
   chrono: '#7ad7ff',
+  overdrive: '#ffb347',
+  sniper: '#b8f1ff',
   dasher: '#ff7a1a',
   orbiter: '#2ee6c8',
   boss: '#ff2e63',

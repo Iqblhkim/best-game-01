@@ -25,8 +25,11 @@ import {
   EVENT_HIT,
   EVENT_MAX_COMBO,
   EVENT_OVER,
+  EVENT_OVERDRIVE,
   EVENT_POWERUP,
   EVENT_SHOOT,
+  EVENT_SNIPER_AIM,
+  EVENT_SNIPER_FIRE,
   EVENT_WAVE_CLEAR,
   EVENT_WIN,
 } from './world.js';
@@ -149,6 +152,9 @@ function runGame() {
     if (fx.events & EVENT_BOSS_DIE) audio.bossDie();
     if (fx.events & EVENT_DASH) audio.dash();
     if (fx.events & EVENT_CHRONO) audio.chrono();
+    if (fx.events & EVENT_SNIPER_AIM) audio.sniperCharge();
+    if (fx.events & EVENT_SNIPER_FIRE) audio.sniperFire();
+    if (fx.events & EVENT_OVERDRIVE) audio.overdrive();
     if (fx.events & EVENT_MAX_COMBO) announce('Maximum combo, times five.');
   }
 

@@ -143,6 +143,23 @@ export function createAudio() {
     dash() {
       noise(0.18, 0.4, 500, 3200);
     },
+    // The sniper takes aim: a thin rising tone that tightens as the bolt charges.
+    sniperCharge() {
+      blip({ type: 'sine', from: 520, to: 1420, seconds: 0.45, volume: 0.3 });
+      blip({ type: 'sine', from: 780, to: 1900, seconds: 0.4, volume: 0.18, delay: 0.08 });
+    },
+    // The sniper's bolt: a sharp crack over a fast falling tone.
+    sniperFire() {
+      noise(0.1, 0.5, 5200, 900);
+      blip({ type: 'square', from: 1500, to: 280, seconds: 0.09, volume: 0.4 });
+    },
+    // Overdrive: a quick rising run of five notes under a swell of noise.
+    overdrive() {
+      [392, 523, 659, 784, 1047].forEach((freq, i) => {
+        blip({ type: 'triangle', from: freq, to: freq * 1.02, seconds: 0.1, volume: 0.5, delay: i * 0.05 });
+      });
+      noise(0.35, 0.3, 1200, 3600);
+    },
     // Two low thumps, like a heartbeat, for the last life.
     heartbeat() {
       blip({ type: 'sine', from: 90, to: 45, seconds: 0.16, volume: 0.9 });

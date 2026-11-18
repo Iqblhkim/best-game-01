@@ -18,6 +18,7 @@
 
 import {
   BOSS_WAVES,
+  CHRONO_BULLET_BOOST,
   CHRONO_SECONDS,
   CHRONO_SLOW,
   COMBO_PER_TIER,
@@ -35,6 +36,8 @@ import {
   MAX_MULTIPLIER,
   ORBITER_FIRE_INTERVAL,
   ORBITER_RANGE,
+  OVERDRIVE_FIRE_FACTOR,
+  OVERDRIVE_SECONDS,
   PLAYER_ACCEL,
   PLAYER_BULLET_RADIUS,
   PLAYER_BULLET_SPEED,
@@ -47,6 +50,11 @@ import {
   SLOWMO_BOSS_SECONDS,
   SLOWMO_FACTOR,
   SLOWMO_WAVE_SECONDS,
+  SNIPER_AIM_SECONDS,
+  SNIPER_BOLT_SPEED,
+  SNIPER_COOL_SECONDS,
+  SNIPER_MAX_RANGE,
+  SNIPER_PER_WAVE,
   WARP_SECONDS,
   WAVE_CLEAR_BONUS,
   WIN_WAVE,
@@ -66,6 +74,9 @@ export const EVENT_ENEMY_SHOOT = 128;
 export const EVENT_DASH = 2048;
 export const EVENT_CHRONO = 4096;
 export const EVENT_MAX_COMBO = 8192;
+export const EVENT_SNIPER_AIM = 16384;
+export const EVENT_SNIPER_FIRE = 32768;
+export const EVENT_OVERDRIVE = 65536;
 
 const TAU = Math.PI * 2;
 
@@ -80,17 +91,25 @@ function edgePoint(rng, width, height, margin) {
 
 // The mix for a normal wave: the count grows by three a wave, the easy
 // kinds lead, and the newer kinds join as the waves go on — dasher from
-// wave 3, orbiter from wave 4.
+// wave 3, orbiter from wave 4, sniper from wave 6. Snipers are capped at
+// two a wave so their crossing aim lines never fence the player in.
 function waveQueue(rng, wave) {
   const kinds = ['chaser'];
   if (wave >= 2) kinds.push('weaver');
   if (wave >= 3) kinds.push('splitter', 'dasher');
   if (wave >= 4) kinds.push('shooter', 'orbiter');
+  if (wave >= 6) kinds.push('sniper');
   const count = 3 + wave * 3;
   const queue = [];
+  let snipers = 0;
   for (let i = 0; i < count; i += 1) {
     const pool = i < 3 ? kinds.slice(0, Math.min(2, kinds.length)) : kinds;
-    queue.push(rng.pick(pool));
+    let kind = rng.pick(pool);
+    if (kind === 'sniper') {
+      snipers += 1;
+      if (snipers > SNIPER_PER_WAVE) kind = 'shooter';
+    }
+    queue.push(kind);
   }
   return queue;
 }
@@ -102,6 +121,7 @@ function wavePreview(wave) {
   const joining = [];
   if (wave === 3) joining.push('DASHERS JOIN THE HUNT');
   if (wave === 4) joining.push('ORBITERS JOIN THE HUNT');
+  if (wave === 6) joining.push('SNIPERS JOIN THE HUNT');
   return joining.length > 0 ? `WAVE ${wave} — ${joining[0]}` : `WAVE ${wave}`;
 }
 
@@ -119,7 +139,9 @@ export function createWorld(rng) {
     combo: 0,
     comboTimer: 0,
     multiplier: 1,
+    maxMultiplier: 1,
     maxComboAnnounced: false,
+    bossesKilled: 0,
     waveState: 'idle',
     waveTimer: 0,
     spawnQueue: [],
@@ -156,6 +178,7 @@ export function createWorld(rng) {
       rapidUntil: 0,
       spreadUntil: 0,
       chronoUntil: 0,
+      overdriveUntil: 0,
       thrust: 0,
     };
   }
@@ -184,6 +207,12 @@ export function createWorld(rng) {
       dashState: kind === 'dasher' ? 'stalk' : null,
       dashTimer: kind === 'dasher' ? DASHER_STALK_SECONDS : 0,
       dashAngle: 0,
+      // The sniper opens by taking aim: its first telegraph starts the
+      // moment it finishes warping in.
+      sniperState: kind === 'sniper' ? 'aim' : null,
+      sniperTimer: kind === 'sniper' ? SNIPER_AIM_SECONDS : 0,
+      sniperAngle: 0,
+      sniperAnnounced: false,
       // The orbiter starts its circle where it actually is, so its first
       // orbit point is beside it instead of across the arena.
       orbitAngle: Math.atan2(point.y - state.player.y, point.x - state.player.x),
@@ -220,6 +249,9 @@ export function createWorld(rng) {
       state.spawnQueue = waveQueue(rng, wave);
       state.spawnTimer = 0.6;
       state.waveState = 'spawning';
+      // The banner's second line counts the incoming ships, so the player
+      // can read the size of the wave at a glance.
+      state.bannerSub = `${state.spawnQueue.length} SHIPS INBOUND`;
     }
   }
 
@@ -239,6 +271,7 @@ export function createWorld(rng) {
     state.combo += 1;
     state.comboTimer = COMBO_WINDOW;
     state.multiplier = 1 + Math.min(MAX_MULTIPLIER - 1, Math.floor(state.combo / COMBO_PER_TIER));
+    state.maxMultiplier = Math.max(state.maxMultiplier, state.multiplier);
     maybeAnnounceMaxCombo(fx);
     const points = award === false ? 0 : spec.points * state.multiplier;
     state.score += points;
@@ -254,7 +287,7 @@ export function createWorld(rng) {
         mini.warp = 0;
       }
     } else if (award !== false && rng.chance(DROP_CHANCE)) {
-      const kinds = ['shield', 'rapid', 'spread', 'bomb', 'chrono'];
+      const kinds = ['shield', 'rapid', 'spread', 'bomb', 'chrono', 'overdrive'];
       state.powerups.push({
         kind: rng.pick(kinds),
         x: enemy.x,
@@ -275,6 +308,8 @@ export function createWorld(rng) {
     const bonus = bossKillScore(boss, state.multiplier);
     const waveBonus = WAVE_CLEAR_BONUS * state.wave;
     state.bossBonus = bonus;
+    state.bossesKilled += 1;
+    state.maxMultiplier = Math.max(state.maxMultiplier, state.multiplier);
     state.score += bonus + waveBonus;
     state.kills += 1;
     state.enemyBullets = [];
@@ -290,7 +325,7 @@ export function createWorld(rng) {
       fx.bursts.push({ x: escort.x, y: escort.y, color: escort.color, n: 12 });
     }
     state.enemies = [];
-    const dropKinds = ['shield', 'rapid', 'spread', 'chrono'];
+    const dropKinds = ['shield', 'rapid', 'spread', 'chrono', 'overdrive'];
     for (let i = 0; i < 3; i += 1) {
       const angle = (i / 3) * TAU + rng.next() * 0.8;
       state.powerups.push({
@@ -325,6 +360,12 @@ export function createWorld(rng) {
       player.chronoUntil = state.time + CHRONO_SECONDS;
       fx.events |= EVENT_CHRONO;
       fx.texts.push({ x: player.x, y: player.y - 24, text: 'CHRONO — TIME SLOWS', color: '#7ad7ff' });
+    } else if (powerup.kind === 'overdrive') {
+      // Overdrive: piercing rounds that punch through one extra ship, and
+      // a quicker trigger, for the next few seconds.
+      player.overdriveUntil = state.time + OVERDRIVE_SECONDS;
+      fx.events |= EVENT_OVERDRIVE;
+      fx.texts.push({ x: player.x, y: player.y - 24, text: 'OVERDRIVE — PIERCING ROUNDS', color: '#ffb347' });
     } else if (powerup.kind === 'bomb') {
       fx.rings.push({ x: player.x, y: player.y, color: '#ffffff' });
       state.shake = Math.max(state.shake, 16);
@@ -387,17 +428,24 @@ export function createWorld(rng) {
     if (input.firing && player.fireCooldown <= 0) {
       const rapid = state.time < player.rapidUntil;
       const spread = state.time < player.spreadUntil;
-      player.fireCooldown = rapid ? PLAYER_FIRE_INTERVAL / 2 : PLAYER_FIRE_INTERVAL;
+      const overdrive = state.time < player.overdriveUntil;
+      // Rapid halves the interval; Overdrive quickens it further. While
+      // Chrono runs, the player's rounds also fly a quarter faster — the
+      // time dilation favours the pilot.
+      player.fireCooldown = PLAYER_FIRE_INTERVAL * (rapid ? 0.5 : 1) * (overdrive ? OVERDRIVE_FIRE_FACTOR : 1);
+      const bulletSpeed = PLAYER_BULLET_SPEED * (state.time < player.chronoUntil ? CHRONO_BULLET_BOOST : 1);
       const offsets = spread ? [-0.16, 0, 0.16] : [0];
       for (const offset of offsets) {
         const angle = player.angle + offset;
         state.bullets.push({
           x: player.x + Math.cos(angle) * (player.radius + 6),
           y: player.y + Math.sin(angle) * (player.radius + 6),
-          vx: Math.cos(angle) * PLAYER_BULLET_SPEED,
-          vy: Math.sin(angle) * PLAYER_BULLET_SPEED,
+          vx: Math.cos(angle) * bulletSpeed,
+          vy: Math.sin(angle) * bulletSpeed,
           radius: PLAYER_BULLET_RADIUS,
           life: 1.3,
+          pierce: overdrive ? 1 : 0,
+          hit: null,
         });
       }
       state.shotsFired += offsets.length;
@@ -468,6 +516,48 @@ export function createWorld(rng) {
           radius: ENEMY_BULLET_RADIUS,
         });
         fx.events |= EVENT_ENEMY_SHOOT;
+      }
+      return;
+    }
+
+    if (enemy.kind === 'sniper') {
+      // Hold a long firing distance and strafe; then take aim down a
+      // telegraph line, fire one very fast bolt, and cool down. The aim
+      // only counts down while the player is in range, so a fleeing pilot
+      // is tracked, not shot at through the whole arena.
+      const want = distance > 430 ? 1 : distance < 340 ? -1 : 0;
+      const strafe = Math.sin(enemy.phase + state.time * 0.6) * 0.7;
+      enemy.vx += (nx * want - ny * strafe) * enemy.speed * 2 * dt;
+      enemy.vy += (ny * want + nx * strafe) * enemy.speed * 2 * dt;
+      if (enemy.sniperState === 'aim') {
+        if (!enemy.sniperAnnounced) {
+          enemy.sniperAnnounced = true;
+          fx.events |= EVENT_SNIPER_AIM;
+        }
+        enemy.sniperAngle = Math.atan2(dy, dx);
+        if (distance < SNIPER_MAX_RANGE) {
+          enemy.sniperTimer -= dt;
+          if (enemy.sniperTimer <= 0) {
+            state.enemyBullets.push({
+              x: enemy.x + Math.cos(enemy.sniperAngle) * (enemy.radius + 4),
+              y: enemy.y + Math.sin(enemy.sniperAngle) * (enemy.radius + 4),
+              vx: Math.cos(enemy.sniperAngle) * SNIPER_BOLT_SPEED,
+              vy: Math.sin(enemy.sniperAngle) * SNIPER_BOLT_SPEED,
+              radius: 7,
+              sniper: true,
+            });
+            fx.events |= EVENT_SNIPER_FIRE;
+            enemy.sniperState = 'cool';
+            enemy.sniperTimer = SNIPER_COOL_SECONDS;
+          }
+        }
+      } else if (enemy.sniperState === 'cool') {
+        enemy.sniperTimer -= dt;
+        if (enemy.sniperTimer <= 0) {
+          enemy.sniperState = 'aim';
+          enemy.sniperTimer = SNIPER_AIM_SECONDS;
+          enemy.sniperAnnounced = false;
+        }
       }
       return;
     }
@@ -556,6 +646,8 @@ export function createWorld(rng) {
         continue;
       }
       // The boss takes hits first: it is the biggest thing on the field.
+      // A hit bursts a bigger shower of sparks now, so piling shots into
+      // the Tyrant feels like progress.
       if (state.boss && state.boss.warp <= 0) {
         const boss = state.boss;
         const dx = bullet.x - boss.x;
@@ -565,7 +657,7 @@ export function createWorld(rng) {
           state.bullets.splice(i, 1);
           boss.hp -= 1;
           boss.hitFlash = 0.12;
-          fx.bursts.push({ x: bullet.x, y: bullet.y, color: boss.color, n: 5, speed: 140 });
+          fx.bursts.push({ x: bullet.x, y: bullet.y, color: boss.color, n: 10, speed: 190 });
           if (boss.hp <= 0) {
             fx.events |= killBoss(fx);
             return;
@@ -573,18 +665,26 @@ export function createWorld(rng) {
           continue;
         }
       }
+      // A piercing round keeps flying after it wounds one ship — it can
+      // hit one more before it is spent — but it never wounds the same
+      // ship twice, and the Tyrant's hide stops it cold (see above).
       for (let j = state.enemies.length - 1; j >= 0; j -= 1) {
         const enemy = state.enemies[j];
-        if (enemy.warp > 0) continue;
+        if (enemy.warp > 0 || enemy === bullet.hit) continue;
         const dx = bullet.x - enemy.x;
         const dy = bullet.y - enemy.y;
         const hit = enemy.radius + bullet.radius;
         if (dx * dx + dy * dy < hit * hit) {
-          state.bullets.splice(i, 1);
           enemy.hp -= 1;
           enemy.hitFlash = 0.14;
           fx.bursts.push({ x: bullet.x, y: bullet.y, color: enemy.color, n: 5, speed: 140 });
           if (enemy.hp <= 0) fx.events |= killEnemy(j, fx, true);
+          if (bullet.pierce > 0) {
+            bullet.pierce -= 1;
+            bullet.hit = enemy;
+          } else {
+            state.bullets.splice(i, 1);
+          }
           break;
         }
       }
@@ -674,6 +774,7 @@ export function createWorld(rng) {
         state.score += bonus;
         state.enemyBullets = [];
         state.slowmo = SLOWMO_WAVE_SECONDS;
+        state.shake = Math.max(state.shake, 8);
         state.waveState = 'clear';
         state.waveTimer = 2.2;
         state.banner = `WAVE ${state.wave} CLEARED  +${bonus}`;
@@ -703,7 +804,9 @@ export function createWorld(rng) {
       state.combo = 0;
       state.comboTimer = 0;
       state.multiplier = 1;
+      state.maxMultiplier = 1;
       state.maxComboAnnounced = false;
+      state.bossesKilled = 0;
       state.bullets = [];
       state.enemyBullets = [];
       state.enemies = [];
@@ -754,7 +857,7 @@ export function createWorld(rng) {
       state.player.y = state.height * 0.62;
       state.enemies = [];
       state.boss = null;
-      const kinds = ['chaser', 'weaver', 'splitter', 'shooter', 'dasher', 'orbiter'];
+      const kinds = ['chaser', 'weaver', 'splitter', 'shooter', 'dasher', 'orbiter', 'sniper'];
       for (let i = 0; i < kinds.length; i += 1) {
         spawnEnemy(kinds[i], rng.range(60, state.width - 60), rng.range(80, state.height - 120));
         const enemy = state.enemies[state.enemies.length - 1];
@@ -762,6 +865,12 @@ export function createWorld(rng) {
         enemy.vy = rng.range(-18, 18);
         enemy.warp = 0;
         enemy.spawnAge = 1;
+        // The demo sniper cools down instead of aiming, so no telegraph
+        // line hangs across the title screen.
+        if (enemy.kind === 'sniper') {
+          enemy.sniperState = 'cool';
+          enemy.sniperTimer = 1;
+        }
       }
       state.bullets = [];
       state.enemyBullets = [];
@@ -773,7 +882,7 @@ export function createWorld(rng) {
       enemy.warp = 0;
       return enemy;
     },
-    addBullet(x, y, angle) {
+    addBullet(x, y, angle, pierce = 0) {
       state.bullets.push({
         x,
         y,
@@ -781,6 +890,8 @@ export function createWorld(rng) {
         vy: Math.sin(angle) * PLAYER_BULLET_SPEED,
         radius: PLAYER_BULLET_RADIUS,
         life: 1.3,
+        pierce,
+        hit: null,
       });
     },
     addPowerup(kind, x, y) {
