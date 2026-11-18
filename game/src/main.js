@@ -141,7 +141,7 @@ function runGame() {
   function applyFx(fx) {
     for (const burst of fx.bursts) particles.burst(burst.x, burst.y, burst.color, burst.n, burst.speed);
     for (const ring of fx.rings) particles.ring(ring.x, ring.y, ring.color);
-    for (const text of fx.texts) particles.text(text.x, text.y, text.message, text.color);
+    for (const text of fx.texts) particles.text(text.x, text.y, text.text, text.color);
     if (fx.events & EVENT_SHOOT) audio.shoot();
     if (fx.events & EVENT_ENEMY_SHOOT) audio.enemyShoot();
     if (fx.events & EVENT_HIT) audio.hit();
